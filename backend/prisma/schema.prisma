@@ -1,0 +1,200 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model School {
+  id                        Int                  @id @default(autoincrement())
+  schoolName                String               @map("school_name") @db.VarChar(255)
+  email                     String               @unique(map: "email") @db.VarChar(255)
+  schoolAddress             String?              @map("school_address") @db.Text
+  username                  String               @unique(map: "username") @db.VarChar(100)
+  passwordHash              String               @map("password_hash") @db.VarChar(255)
+  additionalInfo            String?              @map("additional_info") @db.Text
+  status                    RegistrationStatus   @default(PENDING)
+  isVerified                Boolean              @default(false) @map("is_verified")
+  verifyToken               String?              @unique @map("verify_token") @db.VarChar(255)
+  verifyTokenExpiry         DateTime?            @map("verify_token_expiry") @db.Timestamp(0)
+  forgotPasswordToken       String?              @unique @map("forgot_password_token") @db.VarChar(255)
+  forgotPasswordTokenExpiry DateTime?            @map("forgot_password_token_expiry") @db.Timestamp(0)
+  createdAt                 DateTime             @default(now()) @map("created_at") @db.Timestamp(0)
+  updatedAt                 DateTime             @default(now()) @updatedAt @map("updated_at") @db.Timestamp(0)
+  isListLocked              Boolean              @default(false) @map("is_list_locked")
+  isProfileComplete         Boolean              @default(false) @map("is_profile_complete")
+  city                      String?              @db.VarChar(100)
+  state                     String?              @db.VarChar(100)
+  pinCode                   String?              @map("pin_code") @db.VarChar(20)
+  country                   String?              @db.VarChar(100)
+  phoneLandline             String?              @map("phone_landline") @db.VarChar(50)
+  phoneMobile               String?              @map("phone_mobile") @db.VarChar(50)
+  website                   String?              @db.VarChar(255)
+  affiliationBoard          String?              @map("affiliation_board") @db.VarChar(100)
+  affiliationNo             String?              @map("affiliation_no") @db.VarChar(100)
+  schoolType                String?              @map("school_type") @db.VarChar(100)
+  yearOfEstablishment       Int?                 @map("year_of_establishment")
+  totalStrength             Int?                 @map("total_strength")
+  coordinator               Coordinator?
+  participation             ParticipationDetail?
+  payments                  Payment[]
+  principal                 Principal?
+  students                  Student[]
+  studentDocuments          StudentDocument[]
+
+  @@map("schools")
+}
+
+model Coordinator {
+  id          Int      @id @default(autoincrement())
+  schoolId    Int      @unique(map: "school_id") @map("school_id")
+  name        String   @db.VarChar(255)
+  designation String   @db.VarChar(100)
+  email       String?  @db.VarChar(255)
+  country     String   @db.VarChar(100)
+  phone       String   @db.VarChar(50)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamp(0)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamp(0)
+  school      School   @relation(fields: [schoolId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "coordinators_ibfk_1")
+
+  @@map("coordinators")
+}
+
+model Principal {
+  id          Int      @id @default(autoincrement())
+  schoolId    Int      @unique @map("school_id")
+  name        String   @db.VarChar(255)
+  designation String   @db.VarChar(100)
+  email       String?  @db.VarChar(255)
+  phone       String   @db.VarChar(50)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamp(0)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamp(0)
+  school      School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@map("principals")
+}
+
+model ParticipationDetail {
+  id          Int      @id @default(autoincrement())
+  schoolId    Int      @unique @map("school_id")
+  subjects    String   @db.VarChar(500)
+  classes     String   @db.VarChar(255)
+  count1to4   Int?     @map("count_1_4")
+  count5to7   Int?     @map("count_5_7")
+  count8to10  Int?     @map("count_8_10")
+  count11to12 Int?     @map("count_11_12")
+  totalCount  Int?     @map("total_count")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamp(0)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamp(0)
+  school      School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@map("participation_details")
+}
+
+model Subject {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique(map: "name") @db.VarChar(255)
+  slug      String   @unique(map: "slug") @db.VarChar(255)
+  abbr      String   @unique(map: "abbr") @db.VarChar(50)
+  shortName String   @map("short_name") @db.VarChar(255)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamp(0)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamp(0)
+
+  @@map("subjects")
+}
+
+model Student {
+  id          Int      @id @default(autoincrement())
+  schoolId    Int      @map("school_id")
+  subjectSlug String   @map("subject_slug") @db.VarChar(255)
+  srNo        Int      @map("sr_no")
+  standard    String   @db.VarChar(50)
+  section     String   @db.VarChar(50)
+  studentName String   @map("student_name") @db.VarChar(255)
+  gender      String   @db.VarChar(20)
+  fatherName  String   @map("father_name") @db.VarChar(255)
+  isSelected  Boolean  @default(true) @map("is_selected")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamp(0)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamp(0)
+  school      School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@index([schoolId, subjectSlug])
+  @@map("students")
+}
+
+model Payment {
+  id              Int           @id @default(autoincrement())
+  schoolId        Int           @map("school_id")
+  paymentProofUrl String        @map("payment_proof_url") @db.VarChar(1000)
+  amount          Float?
+  status          PaymentStatus @default(PENDING)
+  adminNotes      String?       @map("admin_notes") @db.Text
+  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamp(0)
+  updatedAt       DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamp(0)
+  school          School        @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@index([schoolId])
+  @@map("payments")
+}
+
+model StudentDocument {
+  id          Int      @id @default(autoincrement())
+  schoolId    Int      @map("school_id")
+  subjectSlug String   @map("subject_slug") @db.VarChar(255)
+  documentUrl String   @map("document_url") @db.VarChar(1000)
+  fileName    String   @map("file_name") @db.VarChar(255)
+  studentCount Int?    @map("student_count")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamp(0)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamp(0)
+
+  school      School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@unique([schoolId, subjectSlug])
+  @@map("student_documents")
+}
+
+model Result {
+  id          Int      @id @default(autoincrement())
+  subjectSlug String   @map("subject_slug") @db.VarChar(100)
+  classSlug   String   @map("class_slug") @db.VarChar(100)
+  year        Int
+  resultUrl   String   @map("result_url") @db.VarChar(1000)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamp(0)
+
+  @@map("results")
+}
+
+enum RegistrationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum PaymentStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+model RegistrationWindow {
+  id        Int      @id @default(autoincrement())
+  startDate DateTime @map("start_date") @db.Timestamp(0)
+  endDate   DateTime @map("end_date") @db.Timestamp(0)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamp(0)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamp(0)
+
+  @@map("registration_windows")
+}
+
+model GalleryImage {
+  id        Int      @id @default(autoincrement())
+  image     String   @db.VarChar(1000)
+  name      String   @db.VarChar(255)
+  school    String   @db.VarChar(255)
+  className String   @map("class_name") @db.VarChar(100)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamp(0)
+
+  @@map("gallery_images")
+}
