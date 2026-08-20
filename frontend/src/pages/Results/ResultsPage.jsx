@@ -1,31 +1,22 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Helmet } from 'react-helmet-async';
-import { FileText, Download, AlertCircle } from 'lucide-react';
-import { API_BASE_URL } from '../../config/api';
+import { FileText, Download } from 'lucide-react';
+import { api } from '../../config/api';
+import { useAsyncData } from '../../hooks/useAsyncData';
+import { ErrorState } from '../../components/ui';
 import { SUBJECTS } from '../../config/subjects';
 
 export default function ResultsPage() {
-  const [results, setResults] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
   const [selectedSubject, setSelectedSubject] = useState('');
   const [selectedYear, setSelectedYear] = useState('');
 
-  useEffect(() => {
-    const fetchResults = async () => {
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/results`);
-        if (!res.ok) throw new Error('Failed to fetch results');
-        const data = await res.json();
-        setResults(data.results);
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchResults();
-  }, []);
+  // limit=100 is the server's ceiling; results are few and filtered client-side.
+  const { data, error, isLoading: loading, reload } = useAsyncData(
+    () => api.get('/api/results?limit=100'),
+    []
+  );
+
+  const results = data?.results ?? [];
 
   // Get unique years from results
   const years = [...new Set(results.map(r => r.year))].sort((a, b) => b - a);
@@ -98,10 +89,7 @@ export default function ResultsPage() {
             <div className="w-8 h-8 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin"></div>
           </div>
         ) : error ? (
-          <div className="bg-red-50 text-red-600 p-6 rounded-xl flex items-center justify-center gap-3">
-            <AlertCircle size={20} />
-            <p className="font-medium">{error}</p>
-          </div>
+          <ErrorState error={error} onRetry={reload} title="Could not load results" />
         ) : filteredResults.length === 0 ? (
           <div className="bg-white p-12 text-center rounded-xl border border-gray-100 shadow-sm">
             <div className="w-16 h-16 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center mx-auto mb-4">

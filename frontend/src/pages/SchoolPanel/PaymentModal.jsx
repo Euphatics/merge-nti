@@ -1,6 +1,9 @@
 import { useState } from 'react';
 import { X, Upload, CheckCircle2, AlertCircle, CreditCard, Building2 } from 'lucide-react';
-import { API_BASE_URL } from '../../config/api';
+import { api } from '../../config/api';
+
+const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
+const ACCEPTED_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
 
 export default function PaymentModal({ open, onClose, schoolId, amount, onPaymentSuccess }) {
   const [file, setFile] = useState(null);
@@ -17,9 +20,24 @@ export default function PaymentModal({ open, onClose, schoolId, amount, onPaymen
   };
 
   const handleFileChange = (e) => {
-    if (e.target.files?.[0]) {
-      setFile(e.target.files[0]);
+    const selected = e.target.files?.[0];
+    if (!selected) return;
+
+    // Checked here so an oversized or wrong-typed file is rejected instantly
+    // rather than after a slow upload that the server then refuses.
+    if (!ACCEPTED_TYPES.includes(selected.type)) {
+      setStatus({ type: 'error', msg: 'Upload a JPG, PNG, WebP or PDF file.' });
+      e.target.value = '';
+      return;
     }
+    if (selected.size > MAX_UPLOAD_BYTES) {
+      setStatus({ type: 'error', msg: 'That file is larger than 15 MB. Please upload a smaller one.' });
+      e.target.value = '';
+      return;
+    }
+
+    setStatus(null);
+    setFile(selected);
   };
 
   const handleSubmit = async () => {
@@ -32,44 +50,25 @@ export default function PaymentModal({ open, onClose, schoolId, amount, onPaymen
     setStatus(null);
 
     try {
-      // Step 1: Upload the actual file to the server
+      // Step 1: store the file, then Step 2: record the payment against its URL.
       const formData = new FormData();
       formData.append('file', file);
 
-      const uploadRes = await fetch(`${API_BASE_URL}/api/upload`, {
-        method: 'POST',
-        credentials: 'include',
-        body: formData, // No Content-Type header — browser sets it with boundary automatically
+      const uploaded = await api.post('/api/upload', formData);
+
+      await api.post(`/api/schools/${schoolId}/payment`, {
+        paymentProofUrl: uploaded.url,
+        amount,
       });
-
-      if (!uploadRes.ok) {
-        const errData = await uploadRes.json().catch(() => ({}));
-        throw new Error(errData.error || 'Failed to upload file');
-      }
-
-      const uploadData = await uploadRes.json();
-      const paymentProofUrl = uploadData.url;
-
-      // Step 2: Create the payment record with the real file URL
-      const res = await fetch(`${API_BASE_URL}/api/schools/${schoolId}/payment`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paymentProofUrl, amount })
-      });
-
-      if (!res.ok) {
-        throw new Error('Failed to submit payment proof');
-      }
 
       setStatus({ type: 'success', msg: 'Payment uploaded successfully! Admin will verify it shortly.' });
-      
+
       setTimeout(() => {
         onPaymentSuccess();
         handleClose();
       }, 2000);
     } catch (err) {
-      setStatus({ type: 'error', msg: err.message || 'Something went wrong.' });
+      setStatus({ type: 'error', msg: err.message });
     } finally {
       setLoading(false);
     }

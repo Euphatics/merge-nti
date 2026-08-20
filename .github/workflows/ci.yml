@@ -1,0 +1,68 @@
+name: CI
+
+# The two previous workflow files lived in backend/.github and frontend/.github,
+# where GitHub never looks — only .github/workflows at the repository root runs.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run db:generate --workspace=backend
+
+      - name: Typecheck backend
+        run: npm run typecheck --workspace=backend
+
+      - name: Lint frontend
+        run: npm run lint --workspace=frontend
+
+      - name: Test backend
+        run: npm run test --workspace=backend
+
+      - name: Build backend
+        run: npm run build --workspace=backend
+
+      - name: Build frontend
+        run: npm run build --workspace=frontend
+        env:
+          # Only needs to be a valid URL — CI verifies the build compiles and
+          # that the generated .htaccess carries the right origin.
+          VITE_API_URL: https://api.ntiolympiad.in
+          VITE_SITE_URL: https://ntiolympiad.in
+
+      - name: Verify SPA deploy artefacts
+        run: |
+          test -f frontend/dist/index.html || { echo "::error::index.html missing from build"; exit 1; }
+          test -f frontend/dist/.htaccess  || { echo "::error::.htaccess missing from build"; exit 1; }
+          grep -q "api.ntiolympiad.in" frontend/dist/.htaccess \
+            || { echo "::error::.htaccess CSP is missing the API origin"; exit 1; }
+
+      - name: Upload frontend build
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 7
+          include-hidden-files: true

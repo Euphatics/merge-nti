@@ -1,32 +1,21 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { ChevronLeft, ChevronRight, X, Image as ImageIcon } from 'lucide-react';
 import { Helmet } from 'react-helmet-async';
-import { API_BASE_URL } from '../../config/api';
+import { api } from '../../config/api';
+import { useAsyncData } from '../../hooks/useAsyncData';
+import { ErrorState } from '../../components/ui';
 import Skeleton from '../../components/Skeleton';
 
 export default function Gallery() {
-  const [galleryData, setGalleryData] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [activeIndex, setActiveIndex] = useState(null); // null = grid view, number = viewer
   const viewerRef = useRef(null);
 
-  useEffect(() => {
-    const fetchGallery = async () => {
-      try {
-        setLoading(true);
-        const res = await fetch(`${API_BASE_URL}/api/gallery`);
-        if (res.ok) {
-          const data = await res.json();
-          setGalleryData(data);
-        }
-      } catch (error) {
-        console.error('Failed to fetch gallery images', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchGallery();
-  }, []);
+  const {
+    data: galleryData = [],
+    error,
+    isLoading: loading,
+    reload,
+  } = useAsyncData(() => api.get('/api/gallery'), []);
 
   useEffect(() => {
     if (activeIndex !== null && viewerRef.current) {
@@ -55,7 +44,7 @@ export default function Gallery() {
   const closeViewer = () => setActiveIndex(null);
 
   const current = activeIndex !== null ? galleryData[activeIndex] : null;
-  const ogImage = galleryData.length > 0 ? `${API_BASE_URL}${galleryData[0].image}` : "https://ntiolympiad.in/about_nti_banner.png";
+  const ogImage = galleryData.length > 0 ? galleryData[0].image : "https://ntiolympiad.in/about_nti_banner.png";
 
   return (
     <section className="w-full bg-[#f9fafb] py-8 lg:py-12" aria-labelledby="gallery-heading">
@@ -113,7 +102,7 @@ export default function Gallery() {
                 {/* Selected Photo */}
                 <div className="flex-shrink-0 w-full sm:w-[480px] rounded-xl overflow-hidden border-[3px] border-[#007BFF] shadow-lg relative group">
                   <img
-                    src={`${API_BASE_URL}${current.image}`}
+                    src={current.image}
                     alt={`${current.name} – ${current.school}`}
                     className="w-full h-[350px] sm:h-[450px] object-cover"
                   />
@@ -168,6 +157,8 @@ export default function Gallery() {
               </div>
             ))}
           </div>
+        ) : error ? (
+          <ErrorState error={error} onRetry={reload} title="Could not load the gallery" />
         ) : galleryData.length === 0 ? (
           <div className="text-center py-20 bg-white rounded-xl shadow-sm border border-gray-100">
             <ImageIcon className="mx-auto h-16 w-16 text-gray-300 mb-4" />
@@ -187,7 +178,7 @@ export default function Gallery() {
                 }`}
               >
                 <img
-                  src={`${API_BASE_URL}${photo.image}`}
+                  src={photo.image}
                   alt={photo.name}
                   className="w-full h-full object-cover"
                   loading="lazy"

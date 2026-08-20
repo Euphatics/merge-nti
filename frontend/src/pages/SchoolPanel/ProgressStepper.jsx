@@ -22,7 +22,7 @@ export default function ProgressStepper({ currentStage }) {
           style={{ width: `${(Math.min(currentStage - 1, steps.length - 1) / (steps.length - 1)) * 100}%` }}
         ></div>
 
-        {steps.map((step, index) => {
+        {steps.map((step) => {
           const isCompleted = currentStage > step.num;
           const isActive = currentStage === step.num;
           const isPending = currentStage < step.num;

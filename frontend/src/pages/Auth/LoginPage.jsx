@@ -4,7 +4,8 @@ import toast from 'react-hot-toast';
 import { Helmet } from 'react-helmet-async';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { ROUTES } from '../../config/routes';
-import { API_BASE_URL } from '../../config/api';
+import { api } from '../../config/api';
+import { cacheUser } from '../../hooks/useSchoolSession';
 import './LoginPage.css';
 
 export default function LoginPage() {
@@ -14,6 +15,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [errors, setErrors] = useState({});
+  const [submitting, setSubmitting] = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -28,31 +30,20 @@ export default function LoginPage() {
       return;
     }
 
+    setSubmitting(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ email, password }),
-      });
+      const data = await api.post('/api/auth/login', { email, password });
 
-      const data = await response.json();
+      // Cached for the first paint only — the panel re-verifies against
+      // /api/auth/me, which is the source of truth for the session.
+      if (data.user) cacheUser(data.user);
 
-      if (response.ok) {
-        // Store user data so SchoolPanel can use the real schoolId
-        if (data.user) {
-          localStorage.setItem('user', JSON.stringify(data.user));
-        }
-        toast.success('Login successful!');
-        navigate('/school-panel');
-      } else {
-        toast.error(`Error: ${data.error || 'Login failed'}`);
-      }
+      toast.success('Login successful!');
+      navigate('/school-panel');
     } catch (error) {
-      console.error('Error during login:', error);
-      toast.error('Network error. Is the backend server running?');
+      toast.error(error.message);
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -205,8 +196,8 @@ export default function LoginPage() {
               </div>
 
               <div className="submit-wrap">
-                <button type="submit" className="submit-btn">
-                  LOGIN <ArrowRight size={18} />
+                <button type="submit" className="submit-btn" disabled={submitting}>
+                  {submitting ? 'SIGNING IN…' : 'LOGIN'} <ArrowRight size={18} />
                 </button>
               </div>
             </form>

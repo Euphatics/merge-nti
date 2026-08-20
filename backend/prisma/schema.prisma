@@ -163,7 +163,32 @@ model Result {
   resultUrl   String   @map("result_url") @db.VarChar(1000)
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamp(0)
 
+  @@index([subjectSlug, classSlug, year])
   @@map("results")
+}
+
+/// Previous-year question papers, answer keys and solutions.
+/// Files live in Cloudinary; `publicId` is retained so deletes remove the asset too.
+model Pyq {
+  id          Int      @id @default(autoincrement())
+  subjectSlug String   @map("subject_slug") @db.VarChar(100)
+  classSlug   String   @map("class_slug") @db.VarChar(100)
+  year        Int
+  type        PyqType  @default(QUESTION_PAPER)
+  paperUrl    String   @map("paper_url") @db.VarChar(1000)
+  publicId    String?  @map("public_id") @db.VarChar(255)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamp(0)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamp(0)
+
+  @@unique([subjectSlug, classSlug, year, type])
+  @@index([subjectSlug, classSlug])
+  @@map("pyqs")
+}
+
+enum PyqType {
+  QUESTION_PAPER
+  ANSWER_KEY
+  SOLUTION
 }
 
 enum RegistrationStatus {
@@ -188,9 +213,12 @@ model RegistrationWindow {
   @@map("registration_windows")
 }
 
+/// Gallery photos. `image` holds an absolute Cloudinary URL — the previous
+/// local-disk paths did not survive a redeploy on ephemeral hosting.
 model GalleryImage {
   id        Int      @id @default(autoincrement())
   image     String   @db.VarChar(1000)
+  publicId  String?  @map("public_id") @db.VarChar(255)
   name      String   @db.VarChar(255)
   school    String   @db.VarChar(255)
   className String   @map("class_name") @db.VarChar(100)

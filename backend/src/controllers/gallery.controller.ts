@@ -1,91 +1,77 @@
 import type { Request, Response } from 'express';
 import prisma from '../config/prisma.js';
-import fs from 'fs';
-import path from 'path';
+import { destroyAsset, uploadBuffer, UPLOAD_FOLDERS } from '../config/cloudinary.js';
+import { logger } from '../config/logger.js';
+import { ApiError } from '../utils/ApiError.js';
 
-export const getGalleryImages = async (req: Request, res: Response): Promise<void> => {
-  try {
-    const images = await prisma.galleryImage.findMany({
-      orderBy: { createdAt: 'desc' }
-    });
-    res.status(200).json(images);
-  } catch (error) {
-    console.error('Error fetching gallery images:', error);
-    res.status(500).json({ error: 'Failed to fetch gallery images' });
+/**
+ * GET /api/gallery
+ * Public. Returns absolute image URLs.
+ *
+ * Rows created before the Cloudinary migration hold a relative path such as
+ * `/uploads/gallery/123.jpg`. Those files no longer exist, so they are filtered
+ * out rather than rendered as broken images.
+ */
+export const getGalleryImages = async (_req: Request, res: Response): Promise<void> => {
+  const images = await prisma.galleryImage.findMany({ orderBy: { createdAt: 'desc' } });
+
+  const usable = images.filter((img) => /^https?:\/\//i.test(img.image));
+
+  if (usable.length !== images.length) {
+    logger.warn(
+      { skipped: images.length - usable.length },
+      'Gallery rows still reference local-disk paths from before the Cloudinary migration'
+    );
   }
+
+  res.status(200).json(
+    usable.map((img) => ({
+      id: img.id,
+      image: img.image,
+      name: img.name,
+      school: img.school,
+      className: img.className,
+      createdAt: img.createdAt,
+    }))
+  );
 };
 
+/**
+ * POST /api/admin/gallery
+ * Accepts a single image in the `file` field plus name/school/className.
+ */
 export const uploadGalleryImage = async (req: Request, res: Response): Promise<void> => {
-  try {
-    if (!req.file) {
-      res.status(400).json({ error: 'No image file uploaded' });
-      return;
-    }
+  if (!req.file) throw ApiError.badRequest('No image file uploaded. Use the field name "file".');
 
-    const { name, school, className } = req.body;
-    if (!name || !school || !className) {
-      res.status(400).json({ error: 'Name, school, and className are required' });
-      return;
-    }
+  const { name, school, className } = req.body;
 
-    // Ensure uploads/gallery directory exists
-    const galleryDir = path.join(process.cwd(), 'uploads', 'gallery');
-    if (!fs.existsSync(galleryDir)) {
-      fs.mkdirSync(galleryDir, { recursive: true });
-    }
+  const asset = await uploadBuffer(req.file.buffer, UPLOAD_FOLDERS.gallery, {
+    resourceType: 'image',
+  });
 
-    const filename = `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(req.file.originalname) || '.jpg'}`;
-    const filePath = path.join(galleryDir, filename);
+  const image = await prisma.galleryImage.create({
+    data: { image: asset.url, publicId: asset.publicId, name, school, className },
+  });
 
-    // Save file buffer to local disk
-    fs.writeFileSync(filePath, req.file.buffer);
-
-    const imageUrl = `/uploads/gallery/${filename}`;
-
-    const newImage = await prisma.galleryImage.create({
-      data: {
-        image: imageUrl,
-        name,
-        school,
-        className
-      }
-    });
-
-    res.status(201).json({ message: 'Gallery image uploaded successfully', data: newImage });
-  } catch (error) {
-    console.error('Error uploading gallery image:', error);
-    res.status(500).json({ error: 'Failed to upload gallery image' });
-  }
+  res.status(201).json({ message: 'Gallery image uploaded successfully', data: image });
 };
 
+/** DELETE /api/admin/gallery/:id */
 export const deleteGalleryImage = async (req: Request, res: Response): Promise<void> => {
-  try {
-    const { id } = req.params;
-    
-    const image = await prisma.galleryImage.findUnique({
-      where: { id: parseInt(id as string) }
-    });
+  const id = Number(req.params.id);
 
-    if (!image) {
-      res.status(404).json({ error: 'Image not found' });
-      return;
-    }
+  const image = await prisma.galleryImage.findUnique({ where: { id } });
+  if (!image) throw ApiError.notFound('Image not found');
 
-    // Delete from database
-    await prisma.galleryImage.delete({
-      where: { id: parseInt(id as string) }
-    });
+  await prisma.galleryImage.delete({ where: { id } });
 
-    // Delete physical file
-    // image.image is something like "/uploads/gallery/1724083320293.jpg"
-    const filePath = path.join(process.cwd(), image.image);
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
-
-    res.status(200).json({ message: 'Gallery image deleted successfully' });
-  } catch (error) {
-    console.error('Error deleting gallery image:', error);
-    res.status(500).json({ error: 'Failed to delete gallery image' });
+  // Best-effort asset cleanup — the row is already deleted, so a Cloudinary
+  // hiccup must not surface as a failed delete.
+  if (image.publicId) {
+    destroyAsset(image.publicId).catch((err) =>
+      logger.warn({ err, publicId: image.publicId }, 'Failed to remove gallery asset from Cloudinary')
+    );
   }
+
+  res.status(200).json({ message: 'Gallery image deleted successfully' });
 };

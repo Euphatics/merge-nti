@@ -1,19 +1,22 @@
-import { useState, useEffect } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { Helmet } from 'react-helmet-async';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { 
-  Building2, 
-  BookOpen, 
-  FileText, 
-  LogOut, 
+import {
+  Building2,
+  BookOpen,
+  FileText,
+  LogOut,
   ShieldCheck,
   CreditCard,
   ShieldAlert
 } from 'lucide-react';
 
 import { SUBJECTS } from '../../config/subjects';
-import { API_BASE_URL } from '../../config/api';
+import { api } from '../../config/api';
+import { useSchoolSession } from '../../hooks/useSchoolSession';
+import { useAsyncData } from '../../hooks/useAsyncData';
+import { ErrorState } from '../../components/ui';
 import CompleteProfileWizard from './CompleteProfileWizard';
 import PaymentModal from './PaymentModal';
 import SubjectUploadModal from './SubjectUploadModal';
@@ -31,76 +34,64 @@ const BORDER_COL   = '#E5E7EB';
 
 export default function SchoolPanelPage() {
   const navigate = useNavigate();
+  const { user, status, signOut } = useSchoolSession();
+  const schoolId = user?.id;
 
-  const storedUser = JSON.parse(localStorage.getItem('user') || '{}');
-  const schoolId = storedUser.id;
-  const [isProfileComplete, setIsProfileComplete] = useState(storedUser.isProfileComplete || false);
-
+  const [profileCompleteOverride, setProfileCompleteOverride] = useState(false);
   const [activeTab, setActiveTab] = useState('overview');
 
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
-  const [isListLocked, setIsListLocked] = useState(false);
-  const [paymentStatus, setPaymentStatus] = useState('none');
-  const [schoolProfile, setSchoolProfile] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
 
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [activeUploadSubject, setActiveUploadSubject] = useState(null);
 
-  const [documentsBySubject, setDocumentsBySubject] = useState({});
+  const {
+    data: panel,
+    error: loadError,
+    isLoading,
+    reload: fetchDocuments,
+    setData: setPanel,
+  } = useAsyncData(
+    () => (schoolId ? api.get(`/api/schools/${schoolId}/students`) : Promise.resolve(null)),
+    [schoolId]
+  );
 
-  useEffect(() => {
-    if (!schoolId) return;
+  const isListLocked = Boolean(panel?.isListLocked);
+  const paymentStatus = panel?.paymentStatus ?? 'none';
+  const schoolProfile = panel?.schoolProfile ?? null;
 
-    if (schoolId === 'test') {
-      setIsLoading(false);
-      setDocumentsBySubject({
-        'mathematics': { documentUrl: '#', fileName: 'math_students.xlsx', studentCount: 45 },
-        'science': { documentUrl: '#', fileName: 'science_students.pdf', studentCount: 30 }
-      });
-      return;
-    }
+  const documentsBySubject = useMemo(
+    () => Object.fromEntries((panel?.documents ?? []).map((doc) => [doc.subjectSlug, doc])),
+    [panel]
+  );
 
-    const fetchDocuments = async () => {
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/schools/${schoolId}/students`, {
-          credentials: 'include',
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.isListLocked !== undefined) setIsListLocked(data.isListLocked);
-          if (data.paymentStatus) setPaymentStatus(data.paymentStatus);
-          if (data.schoolProfile) setSchoolProfile(data.schoolProfile);
-          
-          if (data.documents) {
-            const mapped = {};
-            data.documents.forEach(doc => {
-              mapped[doc.subjectSlug] = doc;
-            });
-            setDocumentsBySubject(mapped);
-          }
-        }
-      } catch (err) {
-        console.error('Failed to fetch documents', err);
-      } finally {
-        setIsLoading(false);
-      }
-    };
+  const replaceDocuments = useCallback(
+    (mapper) => setPanel((prev) => (prev ? { ...prev, documents: mapper(prev.documents ?? []) } : prev)),
+    [setPanel]
+  );
 
-    fetchDocuments();
-  }, [schoolId]);
-
-  if (!schoolId) {
+  if (status === 'loading') {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#F8FAFC]">
+        <div className="w-10 h-10 border-4 border-blue-200 border-t-[#1D4ED8] rounded-full animate-spin" />
+        <span className="sr-only">Loading your school panel…</span>
+      </div>
+    );
+  }
+
+  if (status === 'anonymous' || !schoolId) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#F8FAFC] px-4">
         <div className="text-center">
           <ShieldCheck size={48} className="mx-auto text-gray-400 mb-4" />
-          <h2 className="text-xl font-bold text-[#1F2937]">Access Denied</h2>
-          <p className="text-gray-500 mt-2 mb-4">Please log in to access the school panel.</p>
-          <button 
+          <h2 className="text-xl font-bold text-[#1F2937]">Please sign in</h2>
+          <p className="text-gray-500 mt-2 mb-4 max-w-sm">
+            Your session has ended. Sign in again to access the school panel.
+          </p>
+          <button
             onClick={() => navigate('/login')}
-            className="px-6 py-2 bg-[#007BFF] text-white rounded-sm font-bold text-sm hover:bg-blue-700 transition-colors"
+            className="px-6 py-2 bg-[#1D4ED8] text-white rounded-lg font-bold text-sm hover:bg-blue-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 transition-colors"
           >
             Go to Login
           </button>
@@ -109,28 +100,43 @@ export default function SchoolPanelPage() {
     );
   }
 
+  const isProfileComplete = profileCompleteOverride || Boolean(user?.isProfileComplete);
+
   if (!isProfileComplete) {
-    return <CompleteProfileWizard schoolId={schoolId} onComplete={() => setIsProfileComplete(true)} />;
+    return (
+      <CompleteProfileWizard
+        schoolId={schoolId}
+        onComplete={() => setProfileCompleteOverride(true)}
+      />
+    );
   }
 
   const handleUploadSuccess = (uploadData) => {
-    setDocumentsBySubject(prev => ({
-      ...prev,
-      [uploadData.subjectSlug]: uploadData
-    }));
+    replaceDocuments((docs) => [
+      ...docs.filter((d) => d.subjectSlug !== uploadData.subjectSlug),
+      uploadData,
+    ]);
   };
 
-  const handleRemoveDocument = (subjectSlug) => {
+  // Removal is persisted server-side; previously it only dropped the entry from
+  // local state, so the document reappeared on the next page load.
+  const handleRemoveDocument = async (subjectSlug) => {
     if (isEditingDisabled) return;
-    setDocumentsBySubject(prev => {
-        const updated = {...prev};
-        delete updated[subjectSlug];
-        return updated;
-    });
+
+    const previous = panel?.documents ?? [];
+    replaceDocuments((docs) => docs.filter((d) => d.subjectSlug !== subjectSlug));
+
+    try {
+      await api.delete(`/api/schools/${schoolId}/students/${subjectSlug}`);
+      toast.success('List removed');
+    } catch (err) {
+      replaceDocuments(() => previous);
+      toast.error(err.message);
+    }
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('user');
+  const handleLogout = async () => {
+    await signOut();
     toast.success('Logged out successfully');
     navigate('/login');
   };
@@ -170,7 +176,7 @@ export default function SchoolPanelPage() {
               <h2 className="text-xl font-extrabold tracking-tight" style={{ color: HEADING_COL }}>School Panel</h2>
             </div>
             <p className="text-[11px] font-bold mt-1 uppercase tracking-widest truncate" style={{ color: PRIMARY_BLUE }}>
-              {schoolProfile?.schoolName || storedUser.schoolName || 'School Dashboard'}
+              {schoolProfile?.schoolName || user?.schoolName || 'School Dashboard'}
             </p>
           </div>
           
@@ -226,7 +232,7 @@ export default function SchoolPanelPage() {
             <div className="flex items-center gap-2">
               <ShieldCheck size={18} className="text-[#1D4ED8]" strokeWidth={2.5} />
               <span className="text-sm font-bold truncate max-w-[200px]" style={{ color: HEADING_COL }}>
-                {schoolProfile?.schoolName || storedUser.schoolName || 'School Panel'}
+                {schoolProfile?.schoolName || user?.schoolName || 'School Panel'}
               </span>
             </div>
             <button onClick={handleLogout} className="text-red-600 text-xs font-semibold flex items-center gap-1">
@@ -262,6 +268,15 @@ export default function SchoolPanelPage() {
           <div className="p-4 sm:p-8 max-w-6xl mx-auto w-full">
             
             <ProgressStepper currentStage={currentStage} />
+
+            {loadError && (
+              <ErrorState
+                className="mb-6"
+                error={loadError}
+                onRetry={fetchDocuments}
+                title="Could not load your school data"
+              />
+            )}
 
             {activeTab === 'overview' && (
               <SchoolOverviewTab 
@@ -339,7 +354,9 @@ export default function SchoolPanelPage() {
         onClose={() => setPaymentModalOpen(false)}
         schoolId={schoolId}
         amount={totalFee}
-        onPaymentSuccess={() => setPaymentStatus('pending')}
+        // Refetch rather than guessing the new state — the server also flips
+        // the list lock when a proof is submitted.
+        onPaymentSuccess={fetchDocuments}
       />
     </>
   );

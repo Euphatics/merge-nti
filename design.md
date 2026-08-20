@@ -4,8 +4,13 @@
 The NTI Olympiad platform is designed to be modern, responsive, and accessible. It focuses on a clean and professional user interface that builds trust with schools, admins, and students.
 
 ## 2. Technology Stack for Styling
-- **CSS Framework**: Tailwind CSS v4
-- **Component Library**: Flowbite React (for pre-built interactive components)
+- **CSS Framework**: Tailwind CSS v4, configured with `@theme` in `src/index.css`.
+  There is no `tailwind.config.js` — v4 takes its configuration from CSS.
+- **Component Library**: none. Shared primitives live in `src/components/ui/`
+  and are exported from its barrel file.
+  *(Flowbite React is not a dependency. It was documented here previously but
+  was never installed; only a stale config folder and some orphaned CSS
+  overrides remained, and both have been removed.)*
 - **Icons**: Lucide React
 - **Toast Notifications**: React Hot Toast
 
@@ -44,3 +49,39 @@ The NTI Olympiad platform is designed to be modern, responsive, and accessible. 
 - Use subtle transitions for interactive elements (buttons, links, form inputs).
 - Class: `transition-all duration-200 ease-in-out`
 - Modals and dropdowns should fade in/out smoothly.
+- A global `prefers-reduced-motion` rule in `index.css` reduces every animation
+  and transition to near-zero for visitors who ask for it. Do not re-enable
+  motion past that rule.
+
+## 8. States
+
+Every view that loads data must account for four states, not one. Use the
+shared components rather than inventing per-page markup:
+
+| State | Component | Notes |
+|---|---|---|
+| Loading | `Skeleton` | Match the shape of the real content. |
+| Error | `ErrorState` | Always offer a retry via `onRetry`. |
+| Empty | `EmptyState` | Say what would appear here and how to make it appear. |
+| Loaded | the page itself | |
+
+`ErrorState` distinguishes "cannot reach the server" from a server fault —
+telling someone to check their connection when the connection is fine is worse
+than saying nothing.
+
+## 9. Accessibility
+
+- Every interactive element gets a visible focus ring. `index.css` sets a
+  `:focus-visible` outline globally; do not remove it without replacing it.
+- Icon-only buttons need an `aria-label`.
+- Do not rely on hover alone to reveal controls — the carousel arrows, for
+  example, also appear on keyboard focus.
+- Decorative images use `alt=""`; meaningful images describe their content.
+- Target a 4.5:1 contrast ratio for body text. The `--color-royal-600` and
+  darker steps clear it against white; `royal-400` and lighter do not.
+
+## 10. Colour usage in code
+
+Prefer the `royal-*` theme tokens over raw hex. A number of components still
+use inline hex values such as `#007BFF` and `#1F2937`; these predate the theme
+and should migrate to tokens as those files are touched.

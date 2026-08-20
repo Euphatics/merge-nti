@@ -1,8 +1,6 @@
 import { Lock, Download, CheckCircle2 } from 'lucide-react';
 
 export default function SchoolAdmitCardsTab({
-  isListLocked,
-  paymentStatus,
   SUBJECT_TABS,
   documentsBySubject,
   currentStage

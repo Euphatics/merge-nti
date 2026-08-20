@@ -1,12 +1,27 @@
 {
   "name": "olympiad",
+  "version": "1.0.0",
   "private": true,
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "workspaces": [
     "frontend",
     "backend"
   ],
   "scripts": {
-    "dev": "concurrently \"npm run dev --workspace=backend\" \"npm run dev --workspace=frontend\""
+    "dev": "concurrently -n backend,frontend -c blue,green \"npm run dev --workspace=backend\" \"npm run dev --workspace=frontend\"",
+    "build": "npm run build --workspace=backend && npm run build --workspace=frontend",
+    "build:backend": "npm run build --workspace=backend",
+    "build:frontend": "npm run build --workspace=frontend",
+    "start": "npm run start --workspace=backend",
+    "test": "npm run test --workspace=backend",
+    "lint": "npm run lint --workspace=frontend",
+    "typecheck": "npm run typecheck --workspace=backend",
+    "verify": "npm run typecheck && npm run lint && npm run test && npm run build",
+    "db:deploy": "npm run db:deploy --workspace=backend",
+    "db:migrate": "npm run db:migrate --workspace=backend",
+    "db:studio": "npm run db:studio --workspace=backend"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"

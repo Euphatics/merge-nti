@@ -2,303 +2,238 @@ import type { Request, Response } from 'express';
 import bcryptjs from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import prisma from '../config/prisma.js';
+import { env } from '../config/env.js';
+import { logger } from '../config/logger.js';
+import { clearCookieOptions, sessionCookieOptions, SESSION_EXPIRES_IN } from '../config/cookies.js';
 import { sendEmail } from '../utils/mailer.js';
+import { ApiError } from '../utils/ApiError.js';
+import type { SchoolRequest } from '../middleware/schoolAuth.middleware.js';
+
+const BCRYPT_ROUNDS = 10;
+
+/**
+ * A real bcrypt hash of a throwaway string, compared against when no account
+ * matches. A malformed hash would return `false` immediately and leave the
+ * "no such school" path measurably faster than the "wrong password" path.
+ */
+const TIMING_EQUALISATION_HASH = '$2b$10$pQ7wW81xy4Xa3vpq7iZjZui1fasVCJSxBGHv9Jn0lzQkBqRWKrdHa';
+
+/** The school fields safe to return to the browser. Never includes the hash. */
+function publicSchool(school: {
+  id: number;
+  schoolName: string;
+  username: string;
+  email: string;
+  status: string;
+  isVerified: boolean;
+  isProfileComplete: boolean;
+  isListLocked: boolean;
+}) {
+  return {
+    id: school.id,
+    schoolName: school.schoolName,
+    username: school.username,
+    email: school.email,
+    status: school.status,
+    isVerified: school.isVerified,
+    isProfileComplete: school.isProfileComplete,
+    isListLocked: school.isListLocked,
+  };
+}
 
 /**
  * POST /api/auth/register
- * Creates a new School record.
- * Frontend form fields: schoolName, email, username, password
+ * Creates a School in PENDING status and emails a verification link.
  */
-export const register = async (req: Request, res: Response) => {
-  try {
-    const {
-      schoolName,
-      email,
-      username,
-      password,
-    } = req.body;
+export const register = async (req: Request, res: Response): Promise<void> => {
+  const { schoolName, email, username, password } = req.body;
 
-    if (!schoolName || !email || !username || !password) {
-      return res.status(400).json({ error: 'All fields are required' });
-    }
+  const regWindow = await prisma.registrationWindow.findFirst({ orderBy: { id: 'desc' } });
 
-    // ── Registration window check ──
-    const regWindow = await prisma.registrationWindow.findFirst({
-      orderBy: { id: 'desc' },
-    });
-
-    if (!regWindow) {
-      return res.status(403).json({
-        error: 'Registration is currently closed. No registration window has been set by the admin.',
-      });
-    }
-
-    const now = new Date();
-    if (now < regWindow.startDate || now > regWindow.endDate) {
-      const fmt = (d: Date) => d.toLocaleDateString('en-IN', { year: 'numeric', month: 'long', day: 'numeric' });
-      return res.status(403).json({
-        error: `Registration is currently closed. It is open from ${fmt(regWindow.startDate)} to ${fmt(regWindow.endDate)}.`,
-      });
-    }
-
-    // Check if email already exists
-    const emailExists = await prisma.school.findUnique({ where: { email } });
-    if (emailExists) {
-      return res.status(400).json({ error: 'School Email already exists' });
-    }
-
-    // Check if username already exists
-    const usernameExists = await prisma.school.findUnique({ where: { username } });
-    if (usernameExists) {
-      return res.status(400).json({ error: 'Username exists, choose a different username' });
-    }
-
-    // Hash password
-    const salt = await bcryptjs.genSalt(10);
-    const hashedPassword = await bcryptjs.hash(password, salt);
-
-    // Create School
-    const school = await prisma.school.create({
-      data: {
-        schoolName,
-        email,
-        username,
-        passwordHash: hashedPassword,
-        isProfileComplete: false,
-      },
-    });
-
-    // Send verification email in background (don't block the response)
-    sendEmail({
-      email: school.email,
-      emailType: 'VERIFY_USER',
-      userId: school.id,
-    }).catch((err) => console.error('Failed to send verification email:', err));
-
-    return res.status(200).json({ message: 'User entered successfully' });
-  } catch (error) {
-    console.error('Registration error:', error);
-    return res.status(500).json({ error: 'Internal server error' });
+  if (!regWindow) {
+    throw ApiError.forbidden(
+      'Registration is currently closed. No registration window has been set by the admin.'
+    );
   }
+
+  const now = new Date();
+  if (now < regWindow.startDate || now > regWindow.endDate) {
+    const fmt = (d: Date) =>
+      d.toLocaleDateString('en-IN', { year: 'numeric', month: 'long', day: 'numeric' });
+    throw ApiError.forbidden(
+      `Registration is currently closed. It is open from ${fmt(regWindow.startDate)} to ${fmt(regWindow.endDate)}.`
+    );
+  }
+
+  // Checked explicitly so the messages name the offending field; the unique
+  // indexes still backstop this against a race between the check and the insert.
+  const [emailExists, usernameExists] = await Promise.all([
+    prisma.school.findUnique({ where: { email }, select: { id: true } }),
+    prisma.school.findUnique({ where: { username }, select: { id: true } }),
+  ]);
+
+  if (emailExists) throw ApiError.conflict('An account with this email already exists.');
+  if (usernameExists) throw ApiError.conflict('That username is taken. Please choose another.');
+
+  const passwordHash = await bcryptjs.hash(password, BCRYPT_ROUNDS);
+
+  const school = await prisma.school.create({
+    data: { schoolName, email, username, passwordHash, isProfileComplete: false },
+  });
+
+  // Sent in the background so a slow mail provider does not stall the response.
+  sendEmail({ email: school.email, emailType: 'VERIFY_USER', userId: school.id }).catch((err) =>
+    logger.error({ err, schoolId: school.id }, 'Failed to send verification email')
+  );
+
+  res.status(201).json({
+    message: 'Registration successful. Check your email for a verification link.',
+  });
 };
 
 /**
  * POST /api/auth/login
- * Validates credentials, checks email verification, issues JWT cookie.
- * Frontend form fields: email (can be email or username), password
+ * Accepts an email address or a username. Issues the session cookie.
  */
-export const login = async (req: Request, res: Response) => {
-  try {
-    const { email, password } = req.body;
+export const login = async (req: Request, res: Response): Promise<void> => {
+  const { email, password } = req.body;
+  const identifier = email.toLowerCase();
 
-    // Support login with either email or username
-    const fetchedUser = await prisma.school.findFirst({
-      where: {
-        OR: [{ email }, { username: email }],
-      },
-    });
+  const school = await prisma.school.findFirst({
+    where: { OR: [{ email: identifier }, { username: email }] },
+  });
 
-    if (!fetchedUser) {
-      return res.status(401).json({ error: 'Email doesnt exist' });
-    }
-
-    const validPassword = await bcryptjs.compare(password, fetchedUser.passwordHash);
-    if (!validPassword) {
-      return res.status(401).json({ error: 'Password is incorrect' });
-    }
-
-    if (!fetchedUser.isVerified) {
-      return res.status(401).json({ error: 'Email is not verified, please verify it first' });
-    }
-
-    const tokenData = {
-      id: fetchedUser.id,
-      username: fetchedUser.username,
-    };
-
-    const token = jwt.sign(tokenData, process.env.JWT_TOKEN!, {
-      expiresIn: '1h',
-    });
-
-    res.cookie('token', token, {
-      httpOnly: true,
-      sameSite: 'none',
-      secure: true,
-      path: '/',
-    });
-
-    return res.status(200).json({
-      message: 'Login successful',
-      user: {
-        id: fetchedUser.id,
-        schoolName: fetchedUser.schoolName,
-        username: fetchedUser.username,
-        email: fetchedUser.email,
-        isProfileComplete: fetchedUser.isProfileComplete,
-      },
-    });
-  } catch (error) {
-    console.error('Login error:', error);
-    return res.status(500).json({ error: 'Something went wrong' });
+  // A single generic message for both "no such account" and "wrong password",
+  // so the endpoint cannot be used to enumerate registered schools.
+  const invalid = ApiError.unauthorized('Incorrect email/username or password.');
+  if (!school) {
+    // Equalise timing against the bcrypt comparison on the success path.
+    await bcryptjs.compare(password, TIMING_EQUALISATION_HASH);
+    throw invalid;
   }
+
+  const validPassword = await bcryptjs.compare(password, school.passwordHash);
+  if (!validPassword) throw invalid;
+
+  if (!school.isVerified) {
+    throw ApiError.forbidden('Your email is not verified yet. Please use the link we emailed you.');
+  }
+
+  // Approval status was previously never checked, so a rejected school could
+  // still sign in and use the panel as normal.
+  if (school.status === 'REJECTED') {
+    throw ApiError.forbidden(
+      'This school registration was not approved. Please contact the NTI Olympiad team.'
+    );
+  }
+
+  const token = jwt.sign({ id: school.id, username: school.username }, env.JWT_TOKEN, {
+    expiresIn: SESSION_EXPIRES_IN,
+  });
+
+  res.cookie('token', token, sessionCookieOptions());
+  res.status(200).json({ message: 'Login successful', user: publicSchool(school) });
 };
 
 /**
- * POST /api/auth/logout
- * Clears the token cookie.
+ * GET /api/auth/me
+ * Returns the signed-in school, or 401 once the session has expired.
+ * The frontend uses this to restore state on load instead of trusting
+ * a localStorage copy that outlives the cookie.
  */
-export const logout = async (_req: Request, res: Response) => {
-  try {
-    res.cookie('token', '', {
-      httpOnly: true,
-      sameSite: 'none',
-      secure: true,
-      path: '/',
-      expires: new Date(0),
-    });
-    return res.status(200).json({
-      message: 'Logout successfully',
-      success: true,
-    });
-  } catch (error) {
-    console.error('Logout error:', error);
-    return res.status(500).json({ error: 'Something went wrong' });
-  }
+export const me = async (req: SchoolRequest, res: Response): Promise<void> => {
+  const school = await prisma.school.findUnique({ where: { id: req.school!.id } });
+  if (!school) throw ApiError.unauthorized('Your account no longer exists.');
+
+  res.status(200).json({ user: publicSchool(school) });
 };
 
-/**
- * POST /api/auth/verify-email
- * Validates the verification token from the email link.
- */
-export const verifyEmail = async (req: Request, res: Response) => {
-  try {
-    const { token } = req.body;
+/** POST /api/auth/logout */
+export const logout = async (_req: Request, res: Response): Promise<void> => {
+  res.cookie('token', '', clearCookieOptions());
+  res.status(200).json({ message: 'Logged out successfully', success: true });
+};
 
-    if (!token || typeof token !== 'string') {
-      return res.status(400).json({ error: 'Token missing' });
-    }
+/** POST /api/auth/verify-email */
+export const verifyEmail = async (req: Request, res: Response): Promise<void> => {
+  const { token } = req.body;
 
-    // verifyToken has a @unique index, so findUnique is safe and efficient
-    const user = await prisma.school.findUnique({
-      where: { verifyToken: token },
-    });
+  const school = await prisma.school.findUnique({ where: { verifyToken: token } });
 
-    if (!user || !user.verifyTokenExpiry || user.verifyTokenExpiry <= new Date()) {
-      return res.status(400).json({ error: 'Invalid or expired token' });
-    }
-
-    await prisma.school.update({
-      where: { id: user.id },
-      data: {
-        isVerified: true,
-        verifyToken: null,
-        verifyTokenExpiry: null,
-      },
-    });
-
-    return res.status(200).json({ message: 'Email verified successfully' });
-  } catch (error) {
-    console.error('Email verification error:', error);
-    return res.status(500).json({ error: 'Email verification failed' });
+  if (!school || !school.verifyTokenExpiry || school.verifyTokenExpiry <= new Date()) {
+    throw ApiError.badRequest('This verification link is invalid or has expired.');
   }
+
+  await prisma.school.update({
+    where: { id: school.id },
+    data: { isVerified: true, verifyToken: null, verifyTokenExpiry: null },
+  });
+
+  res.status(200).json({ message: 'Email verified successfully. You can now log in.' });
 };
 
 /**
  * POST /api/auth/forgot-password
- * Sends a password reset email if the account exists.
- * Always returns success to prevent email enumeration.
+ * Always reports success so the endpoint cannot confirm which emails exist.
  */
-export const forgotPassword = async (req: Request, res: Response) => {
-  try {
-    const { email } = req.body;
+export const forgotPassword = async (req: Request, res: Response): Promise<void> => {
+  const { email } = req.body;
 
-    if (!email) {
-      return res.status(400).json({ error: 'Please send the email id' });
-    }
+  const school = await prisma.school.findUnique({ where: { email } });
 
-    const user = await prisma.school.findUnique({ where: { email } });
-
-    if (user) {
-      // Send reset email in background (don't block the response)
-      sendEmail({
-        email: user.email,
-        emailType: 'RESET_PASSWORD',
-        userId: user.id,
-      }).catch((err) => console.error('Failed to send reset email:', err));
-    }
-
-    return res.status(200).json({
-      message: 'If an account exists, then a reset link has been sent to it',
-    });
-  } catch (error) {
-    console.error('Forgot password error:', error);
-    return res.status(500).json({ error: 'Something went wrong' });
+  if (school) {
+    sendEmail({ email: school.email, emailType: 'RESET_PASSWORD', userId: school.id }).catch((err) =>
+      logger.error({ err, schoolId: school.id }, 'Failed to send password reset email')
+    );
   }
+
+  res.status(200).json({
+    message: 'If an account exists for that email, a reset link has been sent to it.',
+  });
 };
 
-/**
- * POST /api/auth/reset-password
- * Validates the reset token and updates the password.
- */
-export const resetPassword = async (req: Request, res: Response) => {
-  try {
-    const { token, password } = req.body;
+/** POST /api/auth/reset-password */
+export const resetPassword = async (req: Request, res: Response): Promise<void> => {
+  const { token, password } = req.body;
 
-    if (!token || !password) {
-      return res.status(400).json({ error: 'Invalid request- Token or password not found' });
-    }
+  const school = await prisma.school.findUnique({ where: { forgotPasswordToken: token } });
 
-    // forgotPasswordToken has a @unique index, so findUnique is safe
-    const user = await prisma.school.findUnique({
-      where: { forgotPasswordToken: token },
-    });
-
-    if (!user || !user.forgotPasswordTokenExpiry || user.forgotPasswordTokenExpiry <= new Date()) {
-      return res.status(400).json({ error: 'Invalid or expired token' });
-    }
-
-    const hashedPassword = await bcryptjs.hash(password, 10);
-
-    await prisma.school.update({
-      where: { id: user.id },
-      data: {
-        passwordHash: hashedPassword,
-        forgotPasswordToken: null,
-        forgotPasswordTokenExpiry: null,
-      },
-    });
-
-    return res.status(200).json({ message: 'Password reset successful' });
-  } catch (error) {
-    console.error('Reset password error:', error);
-    return res.status(500).json({ error: 'Something went wrong' });
+  if (
+    !school ||
+    !school.forgotPasswordTokenExpiry ||
+    school.forgotPasswordTokenExpiry <= new Date()
+  ) {
+    throw ApiError.badRequest('This reset link is invalid or has expired.');
   }
+
+  const passwordHash = await bcryptjs.hash(password, BCRYPT_ROUNDS);
+
+  await prisma.school.update({
+    where: { id: school.id },
+    data: { passwordHash, forgotPasswordToken: null, forgotPasswordTokenExpiry: null },
+  });
+
+  // Any existing session belongs to whoever knew the old password.
+  res.cookie('token', '', clearCookieOptions());
+  res.status(200).json({ message: 'Password reset successful. Please log in.' });
 };
 
 /**
  * GET /api/auth/registration-status
- * Public endpoint — returns whether registration is currently open.
+ * Public — tells the register page whether to show the form.
  */
-export const getRegistrationStatus = async (_req: Request, res: Response) => {
-  try {
-    const regWindow = await prisma.registrationWindow.findFirst({
-      orderBy: { id: 'desc' },
-    });
+export const getRegistrationStatus = async (_req: Request, res: Response): Promise<void> => {
+  const regWindow = await prisma.registrationWindow.findFirst({ orderBy: { id: 'desc' } });
 
-    if (!regWindow) {
-      return res.status(200).json({ isOpen: false, startDate: null, endDate: null });
-    }
-
-    const now = new Date();
-    const isOpen = now >= regWindow.startDate && now <= regWindow.endDate;
-
-    return res.status(200).json({
-      isOpen,
-      startDate: regWindow.startDate,
-      endDate: regWindow.endDate,
-    });
-  } catch (error) {
-    console.error('Registration status error:', error);
-    return res.status(500).json({ error: 'Failed to check registration status' });
+  if (!regWindow) {
+    res.status(200).json({ isOpen: false, startDate: null, endDate: null });
+    return;
   }
+
+  const now = new Date();
+  res.status(200).json({
+    isOpen: now >= regWindow.startDate && now <= regWindow.endDate,
+    startDate: regWindow.startDate,
+    endDate: regWindow.endDate,
+  });
 };

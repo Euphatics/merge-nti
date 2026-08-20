@@ -1,4 +1,4 @@
-import { BookOpen, CheckCircle2, AlertCircle, Eye, Trash2, Upload, FileText } from 'lucide-react';
+import { BookOpen, CheckCircle2, Eye, Trash2, Upload, FileText } from 'lucide-react';
 
 export default function SchoolRegistrationsTab({
   SUBJECT_TABS,

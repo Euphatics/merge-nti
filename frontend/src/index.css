@@ -68,13 +68,16 @@
     box-sizing: border-box;
   }
 
+  /* Declared in the base layer so utility classes can still override the
+     family where a design deliberately calls for it. The previous `!important`
+     versions could not be overridden at all. */
   h1,
   h2,
   h3,
   h4,
   h5,
   h6 {
-    font-family: 'Poppins', sans-serif !important;
+    font-family: var(--font-heading);
   }
 
   body,
@@ -82,7 +85,26 @@
   textarea,
   select,
   button {
-    font-family: 'Inter', sans-serif !important;
+    font-family: var(--font-sans);
+  }
+
+  /* A visible focus ring on every interactive element. Several components
+     previously relied on the browser default, which Tailwind's reset removes. */
+  :where(a, button, input, select, textarea, [tabindex]):focus-visible {
+    outline: 2px solid var(--color-royal-600);
+    outline-offset: 2px;
+  }
+}
+
+/* Respect a reduced-motion preference across the whole app. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
@@ -123,18 +145,9 @@ body {
   background: #94a3b8;
 }
 
-/* Override Flowbite Floating Labels background and text color */
-form label.absolute {
-  background-color: #ffffff !important;
-  color: #000000 !important;
-  pointer-events: none !important;
-}
-
-/* Specific fix to ensure text color inside flowbite floating inputs */
-form input {
-  color: #000000 !important;
-  background-color: transparent !important;
-}
+/* Floating-label inputs style themselves in components/ui/FloatingInput.jsx.
+   A global `form label.absolute { color: #000 !important }` used to live here,
+   which overrode that component's own grey and error-red label states. */
 
 /* ── Marquee (AssociatedSchools) ──────────────────────────── */
 @keyframes marquee {

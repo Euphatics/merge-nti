@@ -8,7 +8,13 @@
   <meta name="description"
     content="NTI Olympiad – India's premier academic competition platform for students from Class 1 to Class 10." />
   <title>NTI Olympiad – Academic Excellence Starts Here</title>
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https: http://localhost:5000; connect-src 'self' https://olympiad-backend-yzd4.onrender.com http://localhost:5000; frame-src 'self' https://www.google.com https://www.facebook.com;" />
+  <meta name="theme-color" content="#1D4ED8" />
+  <!--
+    The Content-Security-Policy is served as a real header from .htaccess, which
+    vite build generates with the correct API origin. A <meta> tag cannot set
+    frame-ancestors, and hardcoding the backend URL here meant it drifted from
+    VITE_API_URL every time the API moved.
+  -->
   <!-- Google Fonts: Inter and Poppins -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

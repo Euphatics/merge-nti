@@ -3,17 +3,26 @@ import { Link } from 'react-router-dom';
 import { CheckCircle2, ArrowRight, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useState, useEffect } from 'react';
 
+/**
+ * Locally hosted, NTI-branded banners.
+ *
+ * These were previously hotlinked from flowbite.com's documentation — generic
+ * demo placeholders served from a third party, which the site's
+ * Content-Security-Policy blocks and which could change or disappear without
+ * notice.
+ */
 const HERO_SLIDES = [
-  "https://flowbite.com/docs/images/carousel/carousel-1.svg",
-  "https://flowbite.com/docs/images/carousel/carousel-2.svg",
-  "https://flowbite.com/docs/images/carousel/carousel-3.svg",
-  "https://flowbite.com/docs/images/carousel/carousel-4.svg",
-  "https://flowbite.com/docs/images/carousel/carousel-5.svg"
+  { src: '/nti_register_banner.png', alt: 'Registration open for the NTI Olympiad 2026–27' },
+  { src: '/about_nti_banner.png', alt: 'About the National Talent Identification Olympiad' },
+  { src: '/how_to_register.png', alt: 'How schools and students register for the NTI Olympiad' }
 ];
+
+const SLIDE_INTERVAL_MS = 6000;
 
 export default function HomeHero() {
   const [currentSlide, setCurrentSlide] = useState(0);
-  
+  const [isPaused, setIsPaused] = useState(false);
+
   const nextSlide = () => {
     setCurrentSlide((prev) => (prev + 1) % HERO_SLIDES.length);
   };
@@ -21,13 +30,19 @@ export default function HomeHero() {
   const prevSlide = () => {
     setCurrentSlide((prev) => (prev - 1 + HERO_SLIDES.length) % HERO_SLIDES.length);
   };
-  
+
   useEffect(() => {
+    // Respect a reduced-motion preference, and hold still while the visitor is
+    // interacting with the carousel.
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (isPaused || prefersReducedMotion) return undefined;
+
     const timer = setInterval(() => {
       setCurrentSlide((prev) => (prev + 1) % HERO_SLIDES.length);
-    }, 5000);
+    }, SLIDE_INTERVAL_MS);
+
     return () => clearInterval(timer);
-  }, []);
+  }, [isPaused]);
 
   return (
     <section className="w-full bg-[#f9fafb] py-6 lg:py-8 border-b border-gray-200">
@@ -95,41 +110,57 @@ export default function HomeHero() {
         <div className="flex flex-col lg:grid lg:grid-cols-12 gap-8 lg:gap-10 items-stretch w-full">
           
           {/* SLIDESHOW */}
-          <div className="w-full lg:col-span-7 h-[250px] sm:h-[350px] lg:h-[520px] xl:h-[560px] rounded-none overflow-hidden shadow-sm border border-gray-200 relative bg-gray-100 group">
-            {HERO_SLIDES.map((src, index) => (
-              <img 
-                key={index}
-                src={src} 
-                alt={`NTI Olympiad banner slide ${index + 1}`}
+          <div
+            className="w-full lg:col-span-7 h-[250px] sm:h-[350px] lg:h-[520px] xl:h-[560px] rounded-none overflow-hidden shadow-sm border border-gray-200 relative bg-gray-100 group"
+            role="region"
+            aria-roledescription="carousel"
+            aria-label="NTI Olympiad highlights"
+            onMouseEnter={() => setIsPaused(true)}
+            onMouseLeave={() => setIsPaused(false)}
+            onFocusCapture={() => setIsPaused(true)}
+            onBlurCapture={() => setIsPaused(false)}
+          >
+            {HERO_SLIDES.map((slide, index) => (
+              <img
+                key={slide.src}
+                src={slide.src}
+                alt={slide.alt}
                 loading={index === 0 ? 'eager' : 'lazy'}
-                className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-1000 ${index === currentSlide ? 'opacity-100' : 'opacity-0'}`} 
+                fetchPriority={index === 0 ? 'high' : 'auto'}
+                aria-hidden={index !== currentSlide}
+                className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-1000 ${index === currentSlide ? 'opacity-100' : 'opacity-0'}`}
               />
             ))}
-            
-            {/* Left Arrow */}
-            <button 
+
+            {/* Left Arrow — kept reachable by keyboard rather than hover-only. */}
+            <button
+              type="button"
               onClick={prevSlide}
-              className="absolute left-4 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/20 backdrop-blur-sm text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all duration-300 hover:bg-black/40 z-10"
+              className="absolute left-4 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/20 backdrop-blur-sm text-white flex items-center justify-center opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-all duration-300 hover:bg-black/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-white z-10"
               aria-label="Previous slide"
             >
               <ChevronLeft size={24} />
             </button>
-            
+
             {/* Right Arrow */}
-            <button 
+            <button
+              type="button"
               onClick={nextSlide}
-              className="absolute right-4 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/20 backdrop-blur-sm text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all duration-300 hover:bg-black/40 z-10"
+              className="absolute right-4 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/20 backdrop-blur-sm text-white flex items-center justify-center opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-all duration-300 hover:bg-black/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-white z-10"
               aria-label="Next slide"
             >
               <ChevronRight size={24} />
             </button>
 
             <div className="absolute bottom-5 left-1/2 -translate-x-1/2 flex gap-2 z-10">
-              {HERO_SLIDES.map((_, index) => (
+              {HERO_SLIDES.map((slide, index) => (
                 <button
-                  key={index}
+                  key={slide.src}
+                  type="button"
                   onClick={() => setCurrentSlide(index)}
-                  className={`w-3 h-3 rounded-full transition-colors ${index === currentSlide ? 'bg-white' : 'bg-white/50'}`}
+                  aria-label={`Go to slide ${index + 1} of ${HERO_SLIDES.length}`}
+                  aria-current={index === currentSlide}
+                  className={`w-3 h-3 rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-1 ${index === currentSlide ? 'bg-white' : 'bg-white/50'}`}
                 />
               ))}
             </div>

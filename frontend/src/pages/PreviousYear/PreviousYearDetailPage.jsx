@@ -6,7 +6,7 @@ import { getSubjectBySlug, getClassBySlug, CLASS_LEVELS } from '../../config/sub
 import { syllabusData } from '../../data/syllabusData';
 import { ROUTES } from '../../config/routes';
 import { Breadcrumb, PageContainer, Button, SectionHeading } from '../../components/ui';
-import { API_BASE_URL } from '../../config/api';
+import { api } from '../../config/api';
 
 const getSampleQuestions = (subjectSlug, classSlug) => {
   const label = classSlug ? classSlug.toUpperCase().replace('-', ' ') : 'CLASS';
@@ -113,36 +113,31 @@ export default function PreviousYearDetailPage() {
   const classLevel = getClassBySlug(classSlug);
 
   useEffect(() => {
-    const loadPyqs = async () => {
-      let pyqList = [];
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/pyqs`);
-        if (res.ok) {
-          const data = await res.json();
-          pyqList = data.pyqs || [];
-        }
-      } catch (err) {
-        console.warn('API pyqs load warning:', err);
-      }
+    if (!subjectSlug || !classSlug) return;
 
-      if (!pyqList.length) {
-        try {
-          const local = localStorage.getItem('nti_pyqs_backup_v1');
-          if (local) pyqList = JSON.parse(local);
-        } catch (e) {
-          console.error(e);
-        }
-      }
+    let active = true;
 
-      const match = pyqList.find(
-        p => p.subjectSlug === subjectSlug && p.classSlug === classSlug && String(p.year) === String(year)
-      );
-      if (match) setPublishedPyq(match);
+    // Filtering happens server-side rather than fetching every paper and
+    // scanning the list in the browser.
+    const params = new URLSearchParams({ subjectSlug, classSlug });
+    if (year) params.set('year', year);
+
+    api
+      .get(`/api/pyqs?${params}`)
+      .then((data) => {
+        if (!active) return;
+        const papers = data.pyqs ?? [];
+        setPublishedPyq(papers.find((p) => p.type === 'Question Paper') ?? papers[0] ?? null);
+      })
+      .catch(() => {
+        // The page still renders its static syllabus and sample questions; only
+        // the download link is unavailable.
+        if (active) setPublishedPyq(null);
+      });
+
+    return () => {
+      active = false;
     };
-
-    if (subjectSlug && classSlug) {
-      loadPyqs();
-    }
   }, [subjectSlug, classSlug, year]);
 
   if (!subject || !classLevel) {

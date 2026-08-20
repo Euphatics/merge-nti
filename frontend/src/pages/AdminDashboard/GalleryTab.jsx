@@ -1,13 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Trash2, UploadCloud, Image as ImageIcon, Plus } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { API_BASE_URL, secureFetch } from '../../config/api';
+import { adminApi, api } from '../../config/api';
+import { useAsyncData } from '../../hooks/useAsyncData';
+import { ErrorState } from '../../components/ui';
 import Skeleton from '../../components/Skeleton';
 import ConfirmModal from '../../components/ConfirmModal';
 
 export default function GalleryTab() {
-  const [images, setImages] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [isUploading, setIsUploading] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, id: null });
@@ -19,24 +19,20 @@ export default function GalleryTab() {
   const [className, setClassName] = useState('');
   const [preview, setPreview] = useState(null);
 
-  useEffect(() => {
-    fetchImages();
-  }, []);
+  const {
+    data: images = [],
+    error,
+    isLoading: loading,
+    reload: fetchImages,
+    setData: setImages,
+  } = useAsyncData(() => api.get('/api/gallery'), []);
 
-  const fetchImages = async () => {
-    try {
-      setLoading(true);
-      const res = await fetch(`${API_BASE_URL}/api/gallery`);
-      if (res.ok) {
-        const data = await res.json();
-        setImages(data);
-      }
-    } catch (error) {
-      toast.error('Failed to load gallery images');
-    } finally {
-      setLoading(false);
-    }
-  };
+  // Object URLs are leaked unless revoked; the preview is replaced on every
+  // file selection and discarded when the form closes.
+  useEffect(() => {
+    if (!preview) return undefined;
+    return () => URL.revokeObjectURL(preview);
+  }, [preview]);
 
   const handleFileChange = (e) => {
     const selectedFile = e.target.files[0];
@@ -61,27 +57,18 @@ export default function GalleryTab() {
       formData.append('school', school);
       formData.append('className', className);
 
-      const res = await secureFetch(`${API_BASE_URL}/api/admin/gallery`, {
-        method: 'POST',
-        body: formData,
-        // Don't set Content-Type header, let browser set it with boundary for FormData
-      });
+      await adminApi.post('/api/admin/gallery', formData);
 
-      if (res.ok) {
-        toast.success('Image uploaded successfully');
-        setShowForm(false);
-        setFile(null);
-        setPreview(null);
-        setName('');
-        setSchool('');
-        setClassName('');
-        fetchImages();
-      } else {
-        const data = await res.json();
-        toast.error(data.error || 'Upload failed');
-      }
-    } catch (error) {
-      toast.error('Upload failed');
+      toast.success('Image uploaded successfully');
+      setShowForm(false);
+      setFile(null);
+      setPreview(null);
+      setName('');
+      setSchool('');
+      setClassName('');
+      fetchImages();
+    } catch (err) {
+      toast.error(err.message);
     } finally {
       setIsUploading(false);
     }
@@ -89,17 +76,11 @@ export default function GalleryTab() {
 
   const handleDelete = async (id) => {
     try {
-      const res = await secureFetch(`${API_BASE_URL}/api/admin/gallery/${id}`, {
-        method: 'DELETE',
-      });
-      if (res.ok) {
-        toast.success('Image deleted');
-        setImages(images.filter((img) => img.id !== id));
-      } else {
-        toast.error('Failed to delete image');
-      }
-    } catch (error) {
-      toast.error('Delete failed');
+      await adminApi.delete(`/api/admin/gallery/${id}`);
+      toast.success('Image deleted');
+      setImages((prev) => (prev ?? []).filter((img) => img.id !== id));
+    } catch (err) {
+      toast.error(err.message);
     } finally {
       setConfirmModal({ isOpen: false, id: null });
     }
@@ -200,6 +181,8 @@ export default function GalleryTab() {
             <Skeleton key={i} width="100%" height="250px" borderRadius="8px" />
           ))}
         </div>
+      ) : error ? (
+        <ErrorState error={error} onRetry={fetchImages} title="Could not load the gallery" />
       ) : images.length === 0 ? (
         <div className="text-center py-20 bg-white rounded-lg border border-gray-200">
           <ImageIcon className="mx-auto h-12 w-12 text-gray-300 mb-3" />
@@ -211,7 +194,8 @@ export default function GalleryTab() {
           {images.map((img) => (
             <div key={img.id} className="bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm group">
               <div className="h-48 overflow-hidden relative bg-gray-100">
-                <img src={`${API_BASE_URL}${img.image}`} alt={img.name} className="w-full h-full object-cover" />
+                {/* Cloudinary returns absolute URLs — no API base prefix. */}
+                <img src={img.image} alt={img.name} className="w-full h-full object-cover" loading="lazy" />
                 <button
                   onClick={() => setConfirmModal({ isOpen: true, id: img.id })}
                   className="absolute top-2 right-2 p-2 bg-red-600 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-700 shadow-md"

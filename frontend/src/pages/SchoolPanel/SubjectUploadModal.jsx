@@ -1,7 +1,18 @@
 import { useState, useCallback } from 'react';
 import toast from 'react-hot-toast';
-import { X, UploadCloud, FileText, CheckCircle2, AlertCircle } from 'lucide-react';
-import { API_BASE_URL } from '../../config/api';
+import { X, UploadCloud, FileText, AlertCircle } from 'lucide-react';
+import { api } from '../../config/api';
+
+const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
+
+const ALLOWED_TYPES = [
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/csv'
+];
 
 export default function SubjectUploadModal({ isOpen, onClose, activeSubject, activeTabLabel, schoolId, onUploadSuccess }) {
   const [isDragging, setIsDragging] = useState(false);
@@ -24,21 +35,14 @@ export default function SubjectUploadModal({ isOpen, onClose, activeSubject, act
       return;
     }
 
-    const allowedTypes = [
-      'application/pdf',
-      'application/msword',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'application/vnd.ms-excel',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    ];
-
-    if (!allowedTypes.includes(file.type)) {
-      toast.error('Only PDF, Word, and Excel files are allowed.');
+    if (!ALLOWED_TYPES.includes(file.type)) {
+      toast.error('Only PDF, Word, Excel and CSV files are allowed.');
       return;
     }
 
-    if (file.size > 5 * 1024 * 1024) {
-      toast.error('File size should not exceed 5MB.');
+    // Matches the server's limit — the previous 5 MB message was misleading.
+    if (file.size > MAX_UPLOAD_BYTES) {
+      toast.error('File size should not exceed 15MB.');
       return;
     }
 
@@ -47,45 +51,25 @@ export default function SubjectUploadModal({ isOpen, onClose, activeSubject, act
     formData.append('file', file);
 
     try {
-      // 1. Upload to server
-      const uploadRes = await fetch(`${API_BASE_URL}/api/upload`, {
-        method: 'POST',
-        credentials: 'include',
-        body: formData
-      });
-      
-      const uploadData = await uploadRes.json();
-      if (!uploadRes.ok) throw new Error(uploadData.error || 'Failed to upload file');
+      // 1. Store the file
+      const uploaded = await api.post('/api/upload?folder=olympiad/student-lists', formData);
 
-      // 2. Save document to backend
-      const saveRes = await fetch(`${API_BASE_URL}/api/schools/${schoolId}/students`, {
-         method: 'POST',
-         credentials: 'include',
-         headers: {'Content-Type': 'application/json'},
-         body: JSON.stringify({ 
-           subjectSlug: activeSubject, 
-           documentUrl: uploadData.url,
-           fileName: file.name,
-           studentCount: parseInt(studentCountInput)
-         })
-      });
-      
-      if (saveRes.ok) {
-         toast.success(`Document uploaded for ${activeTabLabel}!`);
-         onUploadSuccess({
-           subjectSlug: activeSubject,
-           documentUrl: uploadData.url,
-           fileName: file.name,
-           studentCount: parseInt(studentCountInput)
-         });
-         setStudentCountInput('');
-         onClose();
-      } else {
-         toast.error('Failed to save document record');
-      }
-    } catch(err) {
-      console.error(err);
-      toast.error(err.message || 'Error uploading document');
+      // 2. Record it against the school and subject
+      const payload = {
+        subjectSlug: activeSubject,
+        documentUrl: uploaded.url,
+        fileName: file.name,
+        studentCount: parseInt(studentCountInput, 10)
+      };
+
+      const { document } = await api.post(`/api/schools/${schoolId}/students`, payload);
+
+      toast.success(`Document uploaded for ${activeTabLabel}!`);
+      onUploadSuccess(document ?? payload);
+      setStudentCountInput('');
+      onClose();
+    } catch (err) {
+      toast.error(err.message);
     } finally {
       setIsUploading(false);
     }

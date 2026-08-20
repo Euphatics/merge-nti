@@ -1,9 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { Plus, Trash2, ExternalLink, Upload, FileText, BookOpen } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { SUBJECTS } from '../../config/subjects';
 import { validatePDFMagicBytes } from '../../utils/security';
-import { API_BASE_URL, secureFetch } from '../../config/api';
+import { adminApi } from '../../config/api';
+import { ErrorState } from '../../components/ui';
+import { useAsyncData } from '../../hooks/useAsyncData';
 import ConfirmModal from '../../components/ConfirmModal';
 
 const HEADING_COL  = '#1F2937';
@@ -23,33 +25,11 @@ const CLASS_LEVELS = [
   { slug: 'class-10', name: 'Class 10' }
 ];
 
-const LOCAL_STORAGE_KEY = 'nti_pyqs_backup_v1';
-
-const getStoredPyqs = () => {
-  try {
-    const data = localStorage.getItem(LOCAL_STORAGE_KEY);
-    return data ? JSON.parse(data) : [];
-  } catch {
-    return [];
-  }
-};
-
-const saveStoredPyqs = (pyqs) => {
-  try {
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(pyqs));
-  } catch (e) {
-    console.error('Failed to cache PYQs locally', e);
-  }
-};
-
 export default function PYQSTab() {
-  const [pyqs, setPyqs] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [error, setError] = useState('');
   const [deleteTargetId, setDeleteTargetId] = useState(null);
-  
+
   const [newPyq, setNewPyq] = useState({
     subjectSlug: SUBJECTS[0].slug,
     classSlug: CLASS_LEVELS[0].slug,
@@ -58,62 +38,29 @@ export default function PYQSTab() {
     paperUrl: ''
   });
 
-  const fetchPyqs = useCallback(async () => {
-    try {
-      const res = await secureFetch(`${API_BASE_URL}/api/pyqs`);
-      if (res.ok) {
-        const data = await res.json();
-        const list = data.pyqs || data.results || [];
-        setPyqs(list);
-        saveStoredPyqs(list);
-      } else {
-        const fallback = getStoredPyqs();
-        setPyqs(fallback);
-        if (!fallback.length) setError('Failed to load PYQs from server.');
-      }
-    } catch (err) {
-      console.warn('API PYQ fetch warning, using local cache fallback:', err);
-      const fallback = getStoredPyqs();
-      setPyqs(fallback);
-      if (!fallback.length) setError('Failed to load PYQs from server.');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  /**
+   * Papers are stored server-side. This previously fell back to localStorage on
+   * any failure, which made a completely missing backend look like a successful
+   * save — papers existed only in the admin's own browser and were never
+   * visible to students.
+   */
+  const {
+    data,
+    error,
+    isLoading: loading,
+    reload: fetchPyqs,
+    setData,
+  } = useAsyncData(() => adminApi.get('/api/pyqs'), []);
 
-  useEffect(() => {
-    let active = true;
-    secureFetch(`${API_BASE_URL}/api/pyqs`)
-      .then(async (res) => {
-        if (res.ok) {
-          const data = await res.json();
-          const list = data.pyqs || data.results || [];
-          if (active) {
-            setPyqs(list);
-            saveStoredPyqs(list);
-          }
-        } else {
-          const fallback = getStoredPyqs();
-          if (active) {
-            setPyqs(fallback);
-            if (!fallback.length) setError('Failed to load PYQs from server.');
-          }
-        }
-      })
-      .catch((err) => {
-        console.warn('API PYQ fetch warning, using local cache fallback:', err);
-        const fallback = getStoredPyqs();
-        if (active) {
-          setPyqs(fallback);
-          if (!fallback.length) setError('Failed to load PYQs from server.');
-        }
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-
-    return () => { active = false; };
-  }, []);
+  const pyqs = data?.pyqs ?? [];
+  const setPyqs = useCallback(
+    (updater) =>
+      setData((prev) => ({
+        ...prev,
+        pyqs: typeof updater === 'function' ? updater(prev?.pyqs ?? []) : updater,
+      })),
+    [setData]
+  );
 
   const handleFileUpload = async (e) => {
     const file = e.target.files?.[0];
@@ -142,21 +89,12 @@ export default function PYQSTab() {
       const formData = new FormData();
       formData.append('file', file);
 
-      const res = await secureFetch(`${API_BASE_URL}/api/upload?folder=olympiad/pyqs`, {
-        method: 'POST',
-        body: formData,
-      });
+      const data = await adminApi.post('/api/upload?folder=olympiad/pyqs', formData);
 
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || 'Failed to upload PDF file');
-      }
-
-      const data = await res.json();
-      setNewPyq(prev => ({ ...prev, paperUrl: data.url }));
+      setNewPyq(prev => ({ ...prev, paperUrl: data.url, publicId: data.publicId }));
       toast.success('PDF uploaded and verified successfully.');
     } catch (err) {
-      toast.error(err.message || 'Upload failed. You can paste a PDF direct link instead.');
+      toast.error(err.message);
     } finally {
       setUploading(false);
       e.target.value = '';
@@ -170,34 +108,16 @@ export default function PYQSTab() {
       return;
     }
     setSaving(true);
-    
-    const pyqEntry = {
-      id: Date.now().toString(),
-      ...newPyq,
-      createdAt: new Date().toISOString()
-    };
 
     try {
-      const res = await secureFetch(`${API_BASE_URL}/api/admin/pyqs`, {
-        method: 'POST',
-        body: JSON.stringify(newPyq),
-      });
-      
-      if (res.ok) {
-        fetchPyqs();
-      } else {
-        // Local store fallback
-        const updated = [pyqEntry, ...pyqs];
-        setPyqs(updated);
-        saveStoredPyqs(updated);
-      }
-      setNewPyq({ ...newPyq, paperUrl: '' });
+      await adminApi.post('/api/admin/pyqs', newPyq);
+      toast.success('Question paper published');
+      setNewPyq(prev => ({ ...prev, paperUrl: '', publicId: undefined }));
+      await fetchPyqs();
     } catch (err) {
-      console.warn('API error, saving locally:', err);
-      const updated = [pyqEntry, ...pyqs];
-      setPyqs(updated);
-      saveStoredPyqs(updated);
-      setNewPyq({ ...newPyq, paperUrl: '' });
+      // Surfaced rather than silently written to localStorage, so a failed
+      // publish is visible instead of looking like a success.
+      toast.error(err.message);
     } finally {
       setSaving(false);
     }
@@ -207,23 +127,13 @@ export default function PYQSTab() {
     if (!deleteTargetId) return;
     const id = deleteTargetId;
     setDeleteTargetId(null);
+
     try {
-      const res = await secureFetch(`${API_BASE_URL}/api/admin/pyqs/${id}`, {
-        method: 'DELETE',
-      });
-      
-      if (res.ok) {
-        setPyqs(prev => prev.filter(p => p.id !== id));
-      } else {
-        const updated = pyqs.filter(p => p.id !== id);
-        setPyqs(updated);
-        saveStoredPyqs(updated);
-      }
+      await adminApi.delete(`/api/admin/pyqs/${id}`);
+      setPyqs(prev => prev.filter(p => p.id !== id));
       toast.success('Question paper deleted');
-    } catch {
-      const updated = pyqs.filter(p => p.id !== id);
-      setPyqs(updated);
-      saveStoredPyqs(updated);
+    } catch (err) {
+      toast.error(err.message);
     }
   };
 
@@ -348,7 +258,12 @@ export default function PYQSTab() {
           {loading ? (
             <div className="p-8 text-center text-gray-500">Loading question papers...</div>
           ) : error ? (
-            <div className="p-8 text-center text-red-500">{error}</div>
+            <ErrorState
+              className="p-4"
+              error={error}
+              onRetry={fetchPyqs}
+              title="Could not load question papers"
+            />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm whitespace-nowrap">

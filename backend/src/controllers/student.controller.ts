@@ -1,243 +1,187 @@
 import type { Request, Response } from 'express';
 import prisma from '../config/prisma.js';
+import { ApiError } from '../utils/ApiError.js';
+import type { CompleteProfileInput } from '../validation/school.schema.js';
 
+/**
+ * POST /api/schools/:schoolId/students
+ * Records the uploaded student-list document for one subject.
+ */
 export const uploadStudents = async (req: Request, res: Response): Promise<void> => {
-  try {
-    const { schoolId } = req.params;
-    const { subjectSlug, documentUrl, fileName, studentCount } = req.body;
+  const schoolId = Number(req.params.schoolId);
+  const { subjectSlug, documentUrl, fileName, studentCount } = req.body;
 
-    if (!subjectSlug || !documentUrl || !fileName || !studentCount) {
-      res.status(400).json({ error: 'Missing subjectSlug, documentUrl, fileName, or studentCount' });
-      return;
-    }
+  const school = await prisma.school.findUnique({
+    where: { id: schoolId },
+    select: { id: true, isListLocked: true },
+  });
 
-    const school = await prisma.school.findUnique({
-      where: { id: parseInt(schoolId as string) }
-    });
-
-    if (!school) {
-      res.status(404).json({ error: 'School not found' });
-      return;
-    }
-
-    if (school.isListLocked) {
-      res.status(403).json({ error: 'Student list is locked for this school. Cannot modify.' });
-      return;
-    }
-
-    // Upsert the document for the given school and subject
-    await prisma.studentDocument.upsert({
-      where: {
-        schoolId_subjectSlug: {
-          schoolId: parseInt(schoolId as string),
-          subjectSlug
-        }
-      },
-      update: {
-        documentUrl,
-        fileName,
-        studentCount: parseInt(studentCount as string)
-      },
-      create: {
-        schoolId: parseInt(schoolId as string),
-        subjectSlug,
-        documentUrl,
-        fileName,
-        studentCount: parseInt(studentCount as string)
-      }
-    });
-
-    res.status(200).json({ message: 'Document uploaded successfully' });
-  } catch (error) {
-    console.error('Error uploading document:', error);
-    res.status(500).json({ error: 'Failed to save document record' });
+  if (!school) throw ApiError.notFound('School not found');
+  if (school.isListLocked) {
+    throw ApiError.forbidden(
+      'Your student list is locked because payment has been verified. Contact the admin to make changes.'
+    );
   }
+
+  const document = await prisma.studentDocument.upsert({
+    where: { schoolId_subjectSlug: { schoolId, subjectSlug } },
+    update: { documentUrl, fileName, studentCount },
+    create: { schoolId, subjectSlug, documentUrl, fileName, studentCount },
+  });
+
+  res.status(200).json({ message: 'Document uploaded successfully', document });
 };
 
+/**
+ * DELETE /api/schools/:schoolId/students/:subjectSlug
+ * Removes a subject's uploaded list. Previously the frontend dropped it from
+ * local state only, so it reappeared on the next page load.
+ */
+export const deleteStudentDocument = async (req: Request, res: Response): Promise<void> => {
+  const schoolId = Number(req.params.schoolId);
+  const { subjectSlug } = req.params as { subjectSlug: string };
+
+  const school = await prisma.school.findUnique({
+    where: { id: schoolId },
+    select: { id: true, isListLocked: true },
+  });
+
+  if (!school) throw ApiError.notFound('School not found');
+  if (school.isListLocked) {
+    throw ApiError.forbidden(
+      'Your student list is locked because payment has been verified. Contact the admin to make changes.'
+    );
+  }
+
+  const existing = await prisma.studentDocument.findUnique({
+    where: { schoolId_subjectSlug: { schoolId, subjectSlug } },
+    select: { id: true },
+  });
+  if (!existing) throw ApiError.notFound('No document uploaded for that subject');
+
+  await prisma.studentDocument.delete({ where: { id: existing.id } });
+
+  res.status(200).json({ message: 'Document removed successfully' });
+};
+
+/**
+ * GET /api/schools/:schoolId/students
+ * Everything the school panel needs on load: documents, lock state, latest
+ * payment status and the profile header.
+ */
 export const getStudents = async (req: Request, res: Response): Promise<void> => {
-  try {
-    const { schoolId } = req.params;
-    const documents = await prisma.studentDocument.findMany({
-      where: { schoolId: parseInt(schoolId as string) },
-      orderBy: { subjectSlug: 'asc' }
-    });
-    
-    const school = await prisma.school.findUnique({
-      where: { id: parseInt(schoolId as string) },
-      include: { coordinator: true }
-    });
+  const schoolId = Number(req.params.schoolId);
 
-    const latestPayment = await prisma.payment.findFirst({
-      where: { schoolId: parseInt(schoolId as string) },
-      orderBy: { createdAt: 'desc' }
-    });
+  const [documents, school, latestPayment] = await prisma.$transaction([
+    prisma.studentDocument.findMany({
+      where: { schoolId },
+      orderBy: { subjectSlug: 'asc' },
+    }),
+    prisma.school.findUnique({ where: { id: schoolId }, include: { coordinator: true } }),
+    prisma.payment.findFirst({ where: { schoolId }, orderBy: { createdAt: 'desc' } }),
+  ]);
 
-    res.status(200).json({ 
-      documents,
-      isListLocked: school?.isListLocked || false,
-      paymentStatus: latestPayment?.status.toLowerCase() || 'none',
-      schoolProfile: {
-        schoolName: school?.schoolName || '—',
-        schoolCode: school?.id ? `NTI-${school.id}` : '—',
-        schoolAddress: school?.schoolAddress || '—',
-        inchargeTeacher: school?.coordinator?.name || '—',
-        inchargeContact: school?.coordinator?.phone || '—',
-        createdAt: school?.createdAt,
-      }
-    });
-  } catch (error) {
-    console.error('Error fetching documents:', error);
-    res.status(500).json({ error: 'Failed to fetch documents' });
-  }
+  if (!school) throw ApiError.notFound('School not found');
+
+  res.status(200).json({
+    documents,
+    isListLocked: school.isListLocked,
+    paymentStatus: latestPayment?.status.toLowerCase() ?? 'none',
+    paymentNotes: latestPayment?.adminNotes ?? null,
+    schoolProfile: {
+      schoolName: school.schoolName,
+      schoolCode: `NTI-${school.id}`,
+      schoolAddress: school.schoolAddress ?? '—',
+      inchargeTeacher: school.coordinator?.name ?? '—',
+      inchargeContact: school.coordinator?.phone ?? '—',
+      status: school.status,
+      createdAt: school.createdAt,
+    },
+  });
 };
 
+/**
+ * POST /api/schools/:schoolId/complete-profile
+ * Writes the school, principal, coordinator and participation rows in one
+ * transaction so a partial save can never leave a half-completed profile.
+ */
 export const completeProfile = async (req: Request, res: Response): Promise<void> => {
-  try {
-    const { schoolId } = req.params;
-    const {
-      schoolAddress,
-      city,
-      state,
-      pinCode,
-      country,
-      phoneLandline,
-      phoneMobile,
-      website,
-      affiliationBoard,
-      affiliationNo,
-      schoolType,
-      yearOfEstablishment,
-      totalStrength,
+  const schoolId = Number(req.params.schoolId);
+  const input = req.body as CompleteProfileInput;
 
-      principalName,
-      principalDesignation,
-      principalEmail,
-      principalMobile,
+  const existing = await prisma.school.findUnique({ where: { id: schoolId }, select: { id: true } });
+  if (!existing) throw ApiError.notFound('School not found');
 
-      coordinatorName,
-      coordinatorDesignation,
-      coordinatorEmail,
-      coordinatorMobile,
-
-      subjects,
-      classes,
-      count1to4,
-      count5to7,
-      count8to10,
-      count11to12,
-      totalCount,
-    } = req.body;
-
-    const parsedSchoolId = parseInt(schoolId as string);
-    if (isNaN(parsedSchoolId)) {
-      res.status(400).json({ error: 'Invalid school ID' });
-      return;
-    }
-
-    // Verify school exists before attempting update
-    const existingSchool = await prisma.school.findUnique({
-      where: { id: parsedSchoolId },
-      select: { id: true },
-    });
-    if (!existingSchool) {
-      res.status(404).json({ error: 'School not found' });
-      return;
-    }
-
-    await prisma.$transaction(async (tx) => {
+  await prisma.$transaction(
+    async (tx) => {
       await tx.school.update({
-        where: { id: parsedSchoolId },
+        where: { id: schoolId },
         data: {
-          schoolAddress,
-          city,
-          state,
-          pinCode,
-          country,
-          phoneLandline,
-          phoneMobile,
-          website,
-          affiliationBoard,
-          affiliationNo,
-          schoolType,
-          yearOfEstablishment: yearOfEstablishment ? parseInt(yearOfEstablishment) : null,
-          totalStrength: totalStrength ? parseInt(totalStrength) : null,
+          schoolAddress: input.schoolAddress,
+          city: input.city,
+          state: input.state,
+          pinCode: input.pinCode,
+          country: input.country,
+          phoneLandline: input.phoneLandline,
+          phoneMobile: input.phoneMobile,
+          website: input.website,
+          affiliationBoard: input.affiliationBoard,
+          affiliationNo: input.affiliationNo,
+          schoolType: input.schoolType,
+          yearOfEstablishment: input.yearOfEstablishment,
+          totalStrength: input.totalStrength,
           isProfileComplete: true,
-        }
+        },
       });
 
-      if (principalName) {
+      if (input.principalName) {
+        const principal = {
+          name: input.principalName,
+          designation: input.principalDesignation ?? 'Principal',
+          email: input.principalEmail,
+          phone: input.principalMobile ?? '',
+        };
         await tx.principal.upsert({
-          where: { schoolId: parsedSchoolId },
-          update: {
-            name: principalName,
-            designation: principalDesignation || 'Principal',
-            email: principalEmail || null,
-            phone: principalMobile || '',
-          },
-          create: {
-            schoolId: parsedSchoolId,
-            name: principalName,
-            designation: principalDesignation || 'Principal',
-            email: principalEmail || null,
-            phone: principalMobile || '',
-          }
+          where: { schoolId },
+          update: principal,
+          create: { schoolId, ...principal },
         });
       }
 
-      if (coordinatorName) {
+      if (input.coordinatorName) {
+        const coordinator = {
+          name: input.coordinatorName,
+          designation: input.coordinatorDesignation ?? 'Coordinator',
+          email: input.coordinatorEmail,
+          country: input.country ?? 'India',
+          phone: input.coordinatorMobile ?? '',
+        };
         await tx.coordinator.upsert({
-          where: { schoolId: parsedSchoolId },
-          update: {
-            name: coordinatorName,
-            designation: coordinatorDesignation || 'Coordinator',
-            email: coordinatorEmail || null,
-            country: country || 'India',
-            phone: coordinatorMobile || '',
-          },
-          create: {
-            schoolId: parsedSchoolId,
-            name: coordinatorName,
-            designation: coordinatorDesignation || 'Coordinator',
-            email: coordinatorEmail || null,
-            country: country || 'India',
-            phone: coordinatorMobile || '',
-          }
+          where: { schoolId },
+          update: coordinator,
+          create: { schoolId, ...coordinator },
         });
       }
 
-      if (subjects || classes) {
+      if (input.subjects || input.classes) {
+        const participation = {
+          subjects: input.subjects ?? '',
+          classes: input.classes ?? '',
+          count1to4: input.count1to4,
+          count5to7: input.count5to7,
+          count8to10: input.count8to10,
+          count11to12: input.count11to12,
+          totalCount: input.totalCount,
+        };
         await tx.participationDetail.upsert({
-          where: { schoolId: parsedSchoolId },
-          update: {
-            subjects: subjects || '',
-            classes: classes || '',
-            count1to4: count1to4 ? parseInt(count1to4) : null,
-            count5to7: count5to7 ? parseInt(count5to7) : null,
-            count8to10: count8to10 ? parseInt(count8to10) : null,
-            count11to12: count11to12 ? parseInt(count11to12) : null,
-            totalCount: totalCount ? parseInt(totalCount) : null,
-          },
-          create: {
-            schoolId: parsedSchoolId,
-            subjects: subjects || '',
-            classes: classes || '',
-            count1to4: count1to4 ? parseInt(count1to4) : null,
-            count5to7: count5to7 ? parseInt(count5to7) : null,
-            count8to10: count8to10 ? parseInt(count8to10) : null,
-            count11to12: count11to12 ? parseInt(count11to12) : null,
-            totalCount: totalCount ? parseInt(totalCount) : null,
-          }
+          where: { schoolId },
+          update: participation,
+          create: { schoolId, ...participation },
         });
       }
-    }, {
-      maxWait: 5000, // default is 2000
-      timeout: 20000 // default is 5000, increased to 20 seconds
-    });
+    },
+    { maxWait: 5000, timeout: 20000 }
+  );
 
-    res.status(200).json({ message: 'Profile completed successfully' });
-  } catch (error: any) {
-    console.error('Error completing profile:', error);
-    const message = error?.message || 'Failed to complete profile';
-    res.status(500).json({ error: message });
-  }
+  res.status(200).json({ message: 'Profile completed successfully' });
 };
